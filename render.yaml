@@ -1,0 +1,48 @@
+services:
+  # 🟢 Evently Express API Backend Service
+  - type: web
+    name: evently-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5050
+      - key: MONGO_URI
+        sync: false # MongoDB Atlas Replica set link entered in Render dashboard
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: evently-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRE
+        value: 15m
+      - key: REFRESH_TOKEN_SECRET
+        generateValue: true
+      - key: REFRESH_TOKEN_EXPIRE
+        value: 7d
+      - key: CLIENT_URL
+        value: https://evently-client.vercel.app # Replaced with Vercel client deployment URL
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+
+  # 🔴 Evently Shared Private Redis broker
+  - type: redis
+    name: evently-redis
+    plan: free
+    ipAllowList: [] # Render internal private network secure linkage
