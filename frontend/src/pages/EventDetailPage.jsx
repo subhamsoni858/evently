@@ -83,8 +83,11 @@ const EventDetailPage = () => {
   useEffect(() => {
     if (!id) return;
 
-    // Connect to Backend Socket Server on port 5050
-    const socket = io('http://localhost:5050', {
+    // Connect to Backend Socket Server dynamically based on env URL
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5050/api';
+    const socketUrl = apiUrl.replace('/api', '');
+    
+    const socket = io(socketUrl, {
       withCredentials: true,
       transports: ['websocket', 'polling']
     });

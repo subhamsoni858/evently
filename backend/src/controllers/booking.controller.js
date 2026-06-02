@@ -4,6 +4,7 @@ import Event from '../models/Event.js';
 import { ErrorResponse } from '../middlewares/error.js';
 import razorpay from '../config/razorpay.js';
 import { emailQueue } from '../queues/email.queue.js';
+import redisClient from '../config/redis.js';
 
 // @desc    Create a new booking (MongoDB ACID Transaction guarded)
 // @route   POST /api/bookings
@@ -160,6 +161,15 @@ export const createBooking = async (req, res, next) => {
       seatsRemaining: event.seatsRemaining,
     });
 
+    // 9.2 Invalidate Redis Cache so refresh shows correct seats
+    try {
+      const keys = await redisClient.keys('events:list:*');
+      if (keys.length > 0) await redisClient.del(keys);
+      await redisClient.del(`events:detail:${eventId}`);
+    } catch (cacheErr) {
+      console.error('Cache invalidation failed:', cacheErr.message);
+    }
+
     // 9.5. Queue background confirmation email & notify organizer for immediate free checkouts
     if (isFree) {
       await emailQueue.add('send-confirmation', { bookingId: booking._id });
@@ -283,6 +293,15 @@ export const cancelBooking = async (req, res, next) => {
       eventId: event._id,
       seatsRemaining: event.seatsRemaining,
     });
+
+    // 5.2 Invalidate Redis Cache
+    try {
+      const keys = await redisClient.keys('events:list:*');
+      if (keys.length > 0) await redisClient.del(keys);
+      await redisClient.del(`events:detail:${event._id}`);
+    } catch (cacheErr) {
+      console.error('Cache invalidation failed:', cacheErr.message);
+    }
 
     // 5.5. Queue background cancellation receipt email asynchronously & notify organizer
     await emailQueue.add('send-cancellation', { bookingId: booking._id });
