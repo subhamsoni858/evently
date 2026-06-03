@@ -49,6 +49,8 @@ export const createBooking = async (req, res, next) => {
     }
 
     const requestedTickets = Number(ticketCount);
+    const totalAmount = event.price * requestedTickets;
+    const isFree = totalAmount === 0;
 
     // 4. Verify Seat Availability inside transaction (concurrency shield)
     if (event.seatsRemaining < requestedTickets) {
@@ -64,21 +66,20 @@ export const createBooking = async (req, res, next) => {
       );
     }
 
-    // 5. Decrement seats remaining
-    event.seatsRemaining -= requestedTickets;
-    if (useTransaction) {
-      await event.save({ session });
-    } else {
-      await event.save();
+    // 5. Decrement seats remaining ONLY if free. If paid, we decrement on payment success
+    if (isFree) {
+      event.seatsRemaining -= requestedTickets;
+      if (useTransaction) {
+        await event.save({ session });
+      } else {
+        await event.save();
+      }
     }
 
     // 6. Generate unique, premium Booking ID (Format: EVT-YYYYMMDD-RAND6)
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const randomHex = Math.random().toString(36).substr(2, 6).toUpperCase();
     const bookingId = `EVT-${dateStr}-${randomHex}`;
-
-    const totalAmount = event.price * requestedTickets;
-    const isFree = totalAmount === 0;
 
     // 7. Create booking document in 'confirmed' or 'pending' status
     const bookingData = {
@@ -139,8 +140,6 @@ export const createBooking = async (req, res, next) => {
           console.error('Razorpay Order Creation Failed:', rzpError);
           // Manual rollback if transactions are not active
           if (!useTransaction) {
-            event.seatsRemaining += requestedTickets;
-            await event.save();
             await Booking.findByIdAndDelete(booking._id);
           }
           throw new ErrorResponse('Failed to initiate secure Razorpay order payment gateway', 500);
@@ -155,19 +154,21 @@ export const createBooking = async (req, res, next) => {
     }
 
     // 9. 🚨 Real-time update: Broadcast new seats count to Socket.io Room
-    const io = req.app.get('io');
-    io.to(`event:${eventId}`).emit('seat-update', {
-      eventId,
-      seatsRemaining: event.seatsRemaining,
-    });
+    if (isFree) {
+      const io = req.app.get('io');
+      io.to(`event:${eventId}`).emit('seat-update', {
+        eventId,
+        seatsRemaining: event.seatsRemaining,
+      });
 
-    // 9.2 Invalidate Redis Cache so refresh shows correct seats
-    try {
-      const keys = await redisClient.keys('events:list:*');
-      if (keys.length > 0) await redisClient.del(keys);
-      await redisClient.del(`events:detail:${eventId}`);
-    } catch (cacheErr) {
-      console.error('Cache invalidation failed:', cacheErr.message);
+      // 9.2 Invalidate Redis Cache so refresh shows correct seats
+      try {
+        const keys = await redisClient.keys('events:list:*');
+        if (keys.length > 0) await redisClient.del(keys);
+        await redisClient.del(`events:detail:${eventId}`);
+      } catch (cacheErr) {
+        console.error('Cache invalidation failed:', cacheErr.message);
+      }
     }
 
     // 9.5. Queue background confirmation email & notify organizer for immediate free checkouts

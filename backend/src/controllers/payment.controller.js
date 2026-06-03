@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import Booking from '../models/Booking.js';
 import { ErrorResponse } from '../middlewares/error.js';
 import { emailQueue } from '../queues/email.queue.js';
+import redisClient from '../config/redis.js';
 
 // @desc    Verify Razorpay secure checkout payment signature
 // @route   POST /api/payments/verify
@@ -72,16 +73,31 @@ export const verifyPayment = async (req, res, next) => {
       });
     }
 
-    // 3. Mark booking confirmed
+    // 3. Mark booking confirmed and decrement seats
     booking.status = 'confirmed';
     booking.paymentId = razorpay_payment_id;
 
+    const event = booking.eventId;
+    
+    // Concurrency shield: final check before confirmation
+    if (event.seatsRemaining < booking.ticketCount) {
+      if (useTransaction) {
+        await session.abortTransaction();
+        session.endSession();
+      }
+      return next(new ErrorResponse('Event sold out while payment was processing. Please contact support for a refund.', 400));
+    }
+    
+    event.seatsRemaining -= booking.ticketCount;
+
     if (useTransaction) {
       await booking.save({ session });
+      await event.save({ session });
       await session.commitTransaction();
       session.endSession();
     } else {
       await booking.save();
+      await event.save();
     }
 
     // 3.5. Real-time Live Organizer Notification Alert
@@ -97,6 +113,20 @@ export const verifyPayment = async (req, res, next) => {
         createdAt: booking.createdAt,
       });
       console.log(`🔌 Emitted real-time new-booking notification to room: organizer:${organizerId}`);
+    }
+
+    // 3.5.5 Broadcast seat update and invalidate cache
+    io.to(`event:${event._id}`).emit('seat-update', {
+      eventId: event._id,
+      seatsRemaining: event.seatsRemaining,
+    });
+
+    try {
+      const keys = await redisClient.keys('events:list:*');
+      if (keys.length > 0) await redisClient.del(keys);
+      await redisClient.del(`events:detail:${event._id}`);
+    } catch (cacheErr) {
+      console.error('Cache invalidation failed:', cacheErr.message);
     }
 
     // 3.6. Enqueue background email confirmation task
@@ -162,12 +192,19 @@ export const handleWebhook = async (req, res, next) => {
         booking.status = 'confirmed';
         booking.paymentId = paymentId;
 
+        const event = booking.eventId;
+        if (event.seatsRemaining >= booking.ticketCount) {
+          event.seatsRemaining -= booking.ticketCount;
+        }
+
         if (useTransaction) {
           await booking.save({ session });
+          await event.save({ session });
           await session.commitTransaction();
           session.endSession();
         } else {
           await booking.save();
+          await event.save();
         }
 
         console.log(`🔔 Webhook updated Booking ${booking.bookingId} to confirmed!`);
@@ -185,6 +222,20 @@ export const handleWebhook = async (req, res, next) => {
             createdAt: booking.createdAt,
           });
           console.log(`🔌 Webhook emitted real-time new-booking notification to room: organizer:${organizerId}`);
+        }
+
+        // Webhook Broadcast seat update and invalidate cache
+        io.to(`event:${event._id}`).emit('seat-update', {
+          eventId: event._id,
+          seatsRemaining: event.seatsRemaining,
+        });
+
+        try {
+          const keys = await redisClient.keys('events:list:*');
+          if (keys.length > 0) await redisClient.del(keys);
+          await redisClient.del(`events:detail:${event._id}`);
+        } catch (cacheErr) {
+          console.error('Cache invalidation failed:', cacheErr.message);
         }
 
         // 3.6. Webhook Enqueue background email confirmation task
