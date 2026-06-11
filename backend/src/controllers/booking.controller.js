@@ -151,38 +151,43 @@ export const createBooking = async (req, res, next) => {
     if (useTransaction) {
       await session.commitTransaction();
       session.endSession();
+      session = null; // Safety net against post-commit throw
     }
 
-    // 9. 🚨 Real-time update: Broadcast new seats count to Socket.io Room
-    if (isFree) {
-      const io = req.app.get('io');
-      io.to(`event:${eventId}`).emit('seat-update', {
-        eventId,
-        seatsRemaining: event.seatsRemaining,
-      });
+    try {
+      // 9. Post-commit background tasks (only for free events, as paid ones pend Razorpay verification)
+      if (isFree) {
+        const io = req.app.get('io');
+        
+        // 9.1 Broadcast new seats count to Socket.io Room
+        io.to(`event:${eventId}`).emit('seat-update', {
+          eventId,
+          seatsRemaining: event.seatsRemaining,
+        });
 
-      // 9.2 Invalidate Redis Cache so refresh shows correct seats
-      try {
-        const keys = await redisClient.keys('events:list:*');
-        if (keys.length > 0) await redisClient.del(keys);
-        await redisClient.del(`events:detail:${eventId}`);
-      } catch (cacheErr) {
-        console.error('Cache invalidation failed:', cacheErr.message);
+        // 9.2 Invalidate Redis Cache
+        try {
+          const keys = await redisClient.keys('events:list:*');
+          if (keys.length > 0) await redisClient.del(keys);
+          await redisClient.del(`events:detail:${eventId}`);
+        } catch (cacheErr) {
+          console.error('Cache invalidation failed:', cacheErr.message);
+        }
+
+        // 9.3 Queue background confirmation email
+        await emailQueue.add('send-confirmation', { bookingId: booking._id });
+        console.log(`✉️ Enqueued async booking confirmation email for free checkout: ${booking.bookingId}`);
+
+        // 9.4 Emit real-time notification to organizer dashboard
+        io.to(`organizer:${event.organizerId}`).emit('new-booking', {
+          attendeeName: req.user.name,
+          eventTitle: event.title,
+          ticketCount: booking.ticketCount,
+          totalAmount: 0
+        });
       }
-    }
-
-    // 9.5. Queue background confirmation email & notify organizer for immediate free checkouts
-    if (isFree) {
-      await emailQueue.add('send-confirmation', { bookingId: booking._id });
-      console.log(`✉️ Enqueued async booking confirmation email for free checkout: ${booking.bookingId}`);
-
-      // Emit real-time notification to organizer dashboard
-      io.to(`organizer:${event.organizerId}`).emit('new-booking', {
-        attendeeName: req.user.name,
-        eventTitle: event.title,
-        ticketCount: booking.ticketCount,
-        totalAmount: 0
-      });
+    } catch (postCommitErr) {
+      console.error('Post-commit background tasks failed:', postCommitErr);
     }
 
     res.status(201).json({
@@ -286,35 +291,40 @@ export const cancelBooking = async (req, res, next) => {
     if (useTransaction) {
       await session.commitTransaction();
       session.endSession();
+      session = null;
     }
 
-    // 5. 🚨 Real-time update: Broadcast new seat count to Socket.io Room
-    const io = req.app.get('io');
-    io.to(`event:${event._id}`).emit('seat-update', {
-      eventId: event._id,
-      seatsRemaining: event.seatsRemaining,
-    });
-
-    // 5.2 Invalidate Redis Cache
     try {
-      const keys = await redisClient.keys('events:list:*');
-      if (keys.length > 0) await redisClient.del(keys);
-      await redisClient.del(`events:detail:${event._id}`);
-    } catch (cacheErr) {
-      console.error('Cache invalidation failed:', cacheErr.message);
+      // 5. 🚨 Real-time update: Broadcast new seat count to Socket.io Room
+      const io = req.app.get('io');
+      io.to(`event:${event._id}`).emit('seat-update', {
+        eventId: event._id,
+        seatsRemaining: event.seatsRemaining,
+      });
+
+      // 5.2 Invalidate Redis Cache
+      try {
+        const keys = await redisClient.keys('events:list:*');
+        if (keys.length > 0) await redisClient.del(keys);
+        await redisClient.del(`events:detail:${event._id}`);
+      } catch (cacheErr) {
+        console.error('Cache invalidation failed:', cacheErr.message);
+      }
+
+      // 5.5. Queue background cancellation receipt email asynchronously & notify organizer
+      await emailQueue.add('send-cancellation', { bookingId: booking._id });
+      console.log(`✉️ Enqueued async booking cancellation email for: ${booking.bookingId}`);
+
+      // Emit real-time cancellation alert to organizer dashboard
+      io.to(`organizer:${event.organizerId}`).emit('booking-cancelled', {
+        eventId: event._id,
+        attendeeName: req.user.name,
+        eventTitle: event.title,
+        ticketCount: booking.ticketCount
+      });
+    } catch (postCommitErr) {
+      console.error('Post-commit tasks failed for cancellation:', postCommitErr);
     }
-
-    // 5.5. Queue background cancellation receipt email asynchronously & notify organizer
-    await emailQueue.add('send-cancellation', { bookingId: booking._id });
-    console.log(`✉️ Enqueued async booking cancellation email for: ${booking.bookingId}`);
-
-    // Emit real-time cancellation alert to organizer dashboard
-    io.to(`organizer:${event.organizerId}`).emit('booking-cancelled', {
-      eventId: event._id,
-      attendeeName: req.user.name,
-      eventTitle: event.title,
-      ticketCount: booking.ticketCount
-    });
 
     res.status(200).json({
       success: true,
