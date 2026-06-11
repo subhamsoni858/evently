@@ -165,17 +165,18 @@ export const createBooking = async (req, res, next) => {
           seatsRemaining: event.seatsRemaining,
         });
 
-        // 9.2 Invalidate Redis Cache
-        try {
-          const keys = await redisClient.keys('events:list:*');
+        // 9.2 Invalidate Redis Cache (Fire and forget)
+        redisClient.keys('events:list:*').then(async (keys) => {
           if (keys.length > 0) await redisClient.del(keys);
           await redisClient.del(`events:detail:${eventId}`);
-        } catch (cacheErr) {
+        }).catch(cacheErr => {
           console.error('Cache invalidation failed:', cacheErr.message);
-        }
+        });
 
-        // 9.3 Queue background confirmation email
-        await emailQueue.add('send-confirmation', { bookingId: booking._id });
+        // 9.3 Queue background confirmation email (Fire and forget)
+        emailQueue.add('send-confirmation', { bookingId: booking._id }).catch(err => {
+          console.error('Email queue failed:', err.message);
+        });
         console.log(`✉️ Enqueued async booking confirmation email for free checkout: ${booking.bookingId}`);
 
         // 9.4 Emit real-time notification to organizer dashboard
@@ -302,17 +303,18 @@ export const cancelBooking = async (req, res, next) => {
         seatsRemaining: event.seatsRemaining,
       });
 
-      // 5.2 Invalidate Redis Cache
-      try {
-        const keys = await redisClient.keys('events:list:*');
+      // 5.2 Invalidate Redis Cache (Fire and forget)
+      redisClient.keys('events:list:*').then(async (keys) => {
         if (keys.length > 0) await redisClient.del(keys);
         await redisClient.del(`events:detail:${event._id}`);
-      } catch (cacheErr) {
+      }).catch(cacheErr => {
         console.error('Cache invalidation failed:', cacheErr.message);
-      }
+      });
 
       // 5.5. Queue background cancellation receipt email asynchronously & notify organizer
-      await emailQueue.add('send-cancellation', { bookingId: booking._id });
+      emailQueue.add('send-cancellation', { bookingId: booking._id }).catch(err => {
+        console.error('Email queue failed:', err.message);
+      });
       console.log(`✉️ Enqueued async booking cancellation email for: ${booking.bookingId}`);
 
       // Emit real-time cancellation alert to organizer dashboard

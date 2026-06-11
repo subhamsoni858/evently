@@ -6,6 +6,8 @@ console.log('Attempting to connect to Redis...');
 
 const redisClient = new Redis(redisUri, {
   maxRetriesPerRequest: null, // Required for BullMQ
+  enableOfflineQueue: false, // Don't buffer commands if connection is lost
+  commandTimeout: 2000,      // Fail fast after 2 seconds
   retryStrategy(times) {
     const delay = Math.min(times * 50, 2000);
     return delay;
