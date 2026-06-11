@@ -95,43 +95,50 @@ export const verifyPayment = async (req, res, next) => {
       await event.save({ session });
       await session.commitTransaction();
       session.endSession();
+      session = null;
     } else {
       await booking.save();
       await event.save();
     }
 
-    // 3.5. Real-time Live Organizer Notification Alert
-    const io = req.app.get('io');
-    const organizerId = booking.eventId?.organizerId;
-    if (organizerId) {
-      io.to(`organizer:${organizerId}`).emit('new-booking', {
-        attendeeName: req.user.name,
-        eventTitle: booking.eventId?.title || 'Reserved Event',
-        ticketCount: booking.ticketCount,
-        totalAmount: booking.totalAmount,
-        bookingId: booking.bookingId,
-        createdAt: booking.createdAt,
-      });
-      console.log(`🔌 Emitted real-time new-booking notification to room: organizer:${organizerId}`);
-    }
-
-    // 3.5.5 Broadcast seat update and invalidate cache
-    io.to(`event:${event._id}`).emit('seat-update', {
-      eventId: event._id,
-      seatsRemaining: event.seatsRemaining,
-    });
-
     try {
-      const keys = await redisClient.keys('events:list:*');
-      if (keys.length > 0) await redisClient.del(keys);
-      await redisClient.del(`events:detail:${event._id}`);
-    } catch (cacheErr) {
-      console.error('Cache invalidation failed:', cacheErr.message);
-    }
+      // 3.5. Real-time Live Organizer Notification Alert
+      const io = req.app.get('io');
+      const organizerId = booking.eventId?.organizerId;
+      if (organizerId) {
+        io.to(`organizer:${organizerId}`).emit('new-booking', {
+          attendeeName: req.user.name,
+          eventTitle: booking.eventId?.title || 'Reserved Event',
+          ticketCount: booking.ticketCount,
+          totalAmount: booking.totalAmount,
+          bookingId: booking.bookingId,
+          createdAt: booking.createdAt,
+        });
+        console.log(`🔌 Emitted real-time new-booking notification to room: organizer:${organizerId}`);
+      }
 
-    // 3.6. Enqueue background email confirmation task
-    await emailQueue.add('send-confirmation', { bookingId: booking._id });
-    console.log(`✉️ Enqueued async booking confirmation email for: ${booking.bookingId}`);
+      // 3.5.5 Broadcast seat update
+      io.to(`event:${event._id}`).emit('seat-update', {
+        eventId: event._id,
+        seatsRemaining: event.seatsRemaining,
+      });
+
+      // 3.5.6 Invalidate cache (fire-and-forget)
+      redisClient.keys('events:list:*').then(async (keys) => {
+        if (keys.length > 0) await redisClient.del(keys);
+        await redisClient.del(`events:detail:${event._id}`);
+      }).catch(cacheErr => {
+        console.error('Cache invalidation failed:', cacheErr.message);
+      });
+
+      // 3.6. Enqueue background email confirmation task
+      emailQueue.add('send-confirmation', { bookingId: booking._id }).catch(err => {
+        console.error('Email queue failed:', err.message);
+      });
+      console.log(`✉️ Enqueued async booking confirmation email for: ${booking.bookingId}`);
+    } catch (postCommitErr) {
+      console.error('Post-commit tasks failed in verifyPayment:', postCommitErr);
+    }
 
     res.status(200).json({
       success: true,
@@ -202,6 +209,7 @@ export const handleWebhook = async (req, res, next) => {
           await event.save({ session });
           await session.commitTransaction();
           session.endSession();
+          session = null;
         } else {
           await booking.save();
           await event.save();
@@ -209,38 +217,44 @@ export const handleWebhook = async (req, res, next) => {
 
         console.log(`🔔 Webhook updated Booking ${booking.bookingId} to confirmed!`);
 
-        // 3.5. Webhook Real-time Live Organizer Notification Alert
-        const io = req.app.get('io');
-        const organizerId = booking.eventId?.organizerId;
-        if (organizerId) {
-          io.to(`organizer:${organizerId}`).emit('new-booking', {
-            attendeeName: booking.userId?.name || 'Authorized Attendee',
-            eventTitle: booking.eventId?.title || 'Reserved Event',
-            ticketCount: booking.ticketCount,
-            totalAmount: booking.totalAmount,
-            bookingId: booking.bookingId,
-            createdAt: booking.createdAt,
-          });
-          console.log(`🔌 Webhook emitted real-time new-booking notification to room: organizer:${organizerId}`);
-        }
-
-        // Webhook Broadcast seat update and invalidate cache
-        io.to(`event:${event._id}`).emit('seat-update', {
-          eventId: event._id,
-          seatsRemaining: event.seatsRemaining,
-        });
-
         try {
-          const keys = await redisClient.keys('events:list:*');
-          if (keys.length > 0) await redisClient.del(keys);
-          await redisClient.del(`events:detail:${event._id}`);
-        } catch (cacheErr) {
-          console.error('Cache invalidation failed:', cacheErr.message);
-        }
+          // 3.5. Webhook Real-time Live Organizer Notification Alert
+          const io = req.app.get('io');
+          const organizerId = booking.eventId?.organizerId;
+          if (organizerId) {
+            io.to(`organizer:${organizerId}`).emit('new-booking', {
+              attendeeName: booking.userId?.name || 'Authorized Attendee',
+              eventTitle: booking.eventId?.title || 'Reserved Event',
+              ticketCount: booking.ticketCount,
+              totalAmount: booking.totalAmount,
+              bookingId: booking.bookingId,
+              createdAt: booking.createdAt,
+            });
+            console.log(`🔌 Webhook emitted real-time new-booking notification to room: organizer:${organizerId}`);
+          }
 
-        // 3.6. Webhook Enqueue background email confirmation task
-        await emailQueue.add('send-confirmation', { bookingId: booking._id });
-        console.log(`✉️ Webhook enqueued async booking confirmation email for: ${booking.bookingId}`);
+          // Webhook Broadcast seat update
+          io.to(`event:${event._id}`).emit('seat-update', {
+            eventId: event._id,
+            seatsRemaining: event.seatsRemaining,
+          });
+
+          // Invalidate cache (fire-and-forget)
+          redisClient.keys('events:list:*').then(async (keys) => {
+            if (keys.length > 0) await redisClient.del(keys);
+            await redisClient.del(`events:detail:${event._id}`);
+          }).catch(cacheErr => {
+            console.error('Cache invalidation failed:', cacheErr.message);
+          });
+
+          // 3.6. Webhook Enqueue background email confirmation task
+          emailQueue.add('send-confirmation', { bookingId: booking._id }).catch(err => {
+            console.error('Email queue failed:', err.message);
+          });
+          console.log(`✉️ Webhook enqueued async booking confirmation email for: ${booking.bookingId}`);
+        } catch (postCommitErr) {
+          console.error('Post-commit tasks failed in handleWebhook:', postCommitErr);
+        }
       } else {
         if (useTransaction) {
           await session.abortTransaction();
