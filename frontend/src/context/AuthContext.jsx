@@ -18,8 +18,11 @@ export const AuthProvider = ({ children }) => {
           setUser(response.data.user);
         } catch (error) {
           console.error('Session validation failed on mount:', error);
-          // Token is invalid/expired -> clear state
-          localStorage.removeItem('accessToken');
+          // Only clear token if it's explicitly rejected by the backend (401/403)
+          if (error.response && (error.response.status === 401 || error.response.status === 403)) {
+            localStorage.removeItem('accessToken');
+            setUser(null);
+          }
         }
       }
       setLoading(false);
@@ -30,9 +33,12 @@ export const AuthProvider = ({ children }) => {
     // Listen for global logout events broadcasted by Axios client on refresh failures
     const handleGlobalLogout = () => {
       setUser(null);
-      toast.error('Session expired, please log in again.', {
+      toast.error('Session expired or invalid. Redirecting to login...', {
         className: 'hot-toast-custom',
       });
+      setTimeout(() => {
+        window.location.href = '/login';
+      }, 1500);
     };
 
     window.addEventListener('auth-logout', handleGlobalLogout);
