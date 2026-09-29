@@ -5,7 +5,7 @@ import Booking from '../models/Booking.js';
 import Event from '../models/Event.js';
 import User from '../models/User.js';
 
-const redisUri = process.env.REDIS_URI || 'redis://localhost:6379';
+const redisUri = process.env.REDIS_URI || process.env.REDIS_URL || 'redis://localhost:6379';
 
 // Setup connection dedicated for BullMQ (maxRetriesPerRequest must be null)
 const queueConnection = new Redis(redisUri, {
