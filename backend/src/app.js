@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 
 import connectDB from './config/db.js';
@@ -23,6 +24,18 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
+// Rate Limiting Configuration
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  message: {
+    success: false,
+    message: 'Too many requests from this IP, please try again after 15 minutes'
+  }
+});
+
 // Socket.io Server Setup with CORS
 const io = new Server(server, {
   cors: {
@@ -36,6 +49,7 @@ const io = new Server(server, {
 app.set('io', io);
 
 // Midlewares
+app.use(apiLimiter); // Apply rate limiter globally
 app.use(helmet({
   contentSecurityPolicy: false, // Turn off for simpler local development
 }));
