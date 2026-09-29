@@ -1,0 +1,49 @@
+name: Evently CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18.x'
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install Backend Dependencies
+        working-directory: ./backend
+        run: npm ci
+
+      - name: Install Frontend Dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build Frontend SPA
+        working-directory: ./frontend
+        run: npm run build
+
+  deploy:
+    name: Continuous Deployment (CD)
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Trigger Production Deployment
+        run: echo "Code passed all CI checks! Initiating deployment to production server..."
+        # In a real scenario, you would trigger your Render/Vercel deploy hook here:
+        # run: curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
